@@ -31,7 +31,12 @@ class WTMEvidence(BaseModel):
         "OTHER",
     ] = "USER_STATEMENT"
     source: Optional[str] = None
-    status: str = "PROVISIONAL"
+    status: Literal[
+        "PROVISIONAL",
+        "SUPPORTED",
+        "VERIFIED",
+        "DISPUTED",
+    ] = "PROVISIONAL"
     supports: List[str] = Field(default_factory=list)
     contradicts: List[str] = Field(default_factory=list)
 
@@ -40,14 +45,24 @@ class WTMObservation(BaseModel):
     id: str
     statement: str
     source_evidence_ids: List[str] = Field(default_factory=list)
-    status: str = "PROVISIONAL"
+    status: Literal[
+        "PROVISIONAL",
+        "SUPPORTED",
+        "VERIFIED",
+        "DISPUTED",
+    ] = "PROVISIONAL"
 
 
 class WTMHypothesis(BaseModel):
     id: str
     statement: str
     basis_ids: List[str] = Field(default_factory=list)
-    status: str = "PROVISIONAL"
+    status: Literal[
+        "PROVISIONAL",
+        "SUPPORTED",
+        "VERIFIED",
+        "REJECTED",
+    ] = "PROVISIONAL"
     verification_required: bool = True
 
 
@@ -55,7 +70,10 @@ class WTMUnknown(BaseModel):
     id: str
     statement: str
     importance: Literal[
-        "LOW", "MEDIUM", "HIGH", "CRITICAL"
+        "LOW",
+        "MEDIUM",
+        "HIGH",
+        "CRITICAL",
     ] = "MEDIUM"
     blocks_binah: bool = False
 
@@ -89,7 +107,9 @@ class WTMNeedCandidate(BaseModel):
     actor: Optional[str] = None
     basis_ids: List[str] = Field(default_factory=list)
     confidence_status: Literal[
-        "PROVISIONAL", "SUPPORTED", "VERIFIED"
+        "PROVISIONAL",
+        "SUPPORTED",
+        "VERIFIED",
     ] = "PROVISIONAL"
 
 
