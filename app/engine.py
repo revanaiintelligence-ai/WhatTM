@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from uuid import uuid4
 
 from .models import (
@@ -7,7 +8,6 @@ from .models import (
     WTMEvidence,
     WTMFormInput,
     WTMOutput,
-    WTMQuestion,
 )
 from .questions import WTMQuestionManager
 
@@ -16,10 +16,17 @@ class WTMEngine:
     """
     Motor estructural de WhatTM.
 
-    Registra declaraciones, conserva la trazabilidad y actualiza
-    el estado de clarificación. No confunde declaraciones con
-    hechos verificados ni decide automáticamente que un caso
-    está listo para BINAH.
+    Responsabilidades:
+    - Registrar los mensajes como declaraciones provisionales.
+    - Actualizar situación, contexto y objetivo cuando exista
+      información explícita o una respuesta a una pregunta pendiente.
+    - Mantener la trazabilidad de la información.
+    - Evitar repetir preguntas auxiliares ya respondidas.
+    - Comprobar los bloqueos conocidos antes de preparar el caso
+      para BINAH.
+
+    Este motor no sustituye a un modelo de lenguaje ni verifica
+    automáticamente la veracidad de las declaraciones.
     """
 
     def __init__(self) -> None:
@@ -29,13 +36,13 @@ class WTMEngine:
         self,
         form_input: WTMFormInput,
     ) -> WTMOutput:
-        """Crea el estado inicial a partir del formulario."""
+        """Construye el estado inicial a partir del formulario."""
 
         output = WTMOutput(
             business=form_input.business,
-            context=form_input.context,
-            objective=form_input.objective,
-            situation=form_input.description,
+            context=self._clean(form_input.context),
+            objective=self._clean(form_input.objective),
+            situation=self._clean(form_input.description),
         )
 
         if form_input.description and form_input.description.strip():
@@ -71,11 +78,12 @@ class WTMEngine:
         conversation_input: WTMConversationInput,
     ) -> WTMOutput:
         """
-        Registra un mensaje del usuario y actualiza el estado.
+        Registra un mensaje y actualiza el caso.
 
-        El mensaje se conserva como declaración provisional.
-        Este método no interpreta automáticamente su significado
-        ni inventa hechos, observaciones o hipótesis.
+        Si el mensaje responde a una pregunta pendiente, intenta
+        incorporarlo al campo correspondiente. Si contiene una
+        declaración explícita sobre contexto, objetivo o situación,
+        utiliza esa declaración para actualizar el campo indicado.
         """
 
         message = conversation_input.message.strip()
@@ -99,32 +107,112 @@ class WTMEngine:
             )
         )
 
-        output.status = "CLARIFYING"
+        self._apply_message_to_case(output, message)
+
         output.ready_for_binah = False
         output.blocking_reasons = []
 
-        # No se borran las preguntas anteriores: se conserva
-        # el historial y se actualiza únicamente el estado actual.
         self._update_questions(output)
         self._refresh_traceability(output)
 
         return output
+
+    def _apply_message_to_case(
+        self,
+        output: WTMOutput,
+        message: str,
+    ) -> None:
+        """
+        Actualiza campos únicamente cuando existe una señal clara.
+
+        Las expresiones explícitas tienen prioridad sobre la pregunta
+        pendiente. No se infiere que una respuesta sea un hecho probado.
+        """
+
+        explicit_fields = self._extract_explicit_fields(message)
+
+        if explicit_fields:
+            for field, value in explicit_fields.items():
+                setattr(output, field, value)
+            return
+
+        pending = self.question_manager.pending(output)
+
+        if not pending:
+            return
+
+        # La primera pregunta pendiente orienta la interpretación
+        # de la respuesta, pero no convierte la respuesta en un hecho.
+        target = pending[0].target
+
+        if target in {"situation", "context", "objective"}:
+            current_value = getattr(output, target)
+
+            if not current_value or not current_value.strip():
+                setattr(output, target, message)
+
+    def _extract_explicit_fields(
+        self,
+        message: str,
+    ) -> dict[str, str]:
+        """
+        Extrae campos solo cuando el usuario utiliza expresiones
+        explícitas. Es una regla básica, no comprensión semántica.
+        """
+
+        patterns = {
+            "objective": (
+                r"(?:mi objetivo es|el objetivo es|"
+                r"quiero conseguir|quiero lograr|"
+                r"me gustaría conseguir|necesito conseguir)"
+                r"\s*[:,-]?\s*(.+)"
+            ),
+            "context": (
+                r"(?:el contexto es|mi contexto es|"
+                r"esto ocurre en|ocurre en|"
+                r"en mi negocio|en mi empresa|"
+                r"en mi trabajo)"
+                r"\s*[:,-]?\s*(.+)"
+            ),
+            "situation": (
+                r"(?:la situación es|el problema es|"
+                r"lo que ocurre es|está ocurriendo que)"
+                r"\s*[:,-]?\s*(.+)"
+            ),
+        }
+
+        extracted: dict[str, str] = {}
+
+        for field, pattern in patterns.items():
+            match = re.search(
+                pattern,
+                message,
+                flags=re.IGNORECASE,
+            )
+
+            if match:
+                value = self._clean(match.group(1))
+
+                if value:
+                    extracted[field] = value
+
+        return extracted
 
     def _update_questions(
         self,
         output: WTMOutput,
     ) -> WTMOutput:
         """
-        Actualiza las preguntas auxiliares según los campos del caso.
+        Sincroniza las preguntas auxiliares con los campos actuales.
 
-        La generación de preguntas no demuestra por sí sola que
-        el caso esté completo ni que esté listo para BINAH.
+        Conserva el historial de preguntas existentes, pero solo
+        genera nuevas preguntas para campos que siguen vacíos.
         """
 
         generated = self.question_manager.build_basic_questions(
-            context=bool(output.context and output.context.strip()),
-            objective=bool(output.objective and output.objective.strip()),
-            situation=bool(output.situation and output.situation.strip()),
+            context=bool(self._clean(output.context)),
+            objective=bool(self._clean(output.objective)),
+            situation=bool(self._clean(output.situation)),
         )
 
         existing_by_id = {
@@ -132,34 +220,32 @@ class WTMEngine:
             for question in output.questions
         }
 
-        merged_questions = list(output.questions)
-
         for question in generated:
             if question.id not in existing_by_id:
-                merged_questions.append(question)
+                output.questions.append(question)
+                existing_by_id[question.id] = question
 
-        # Las preguntas auxiliares solo se marcan como respondidas
-        # cuando el campo correspondiente ya contiene información.
         field_values = {
             "context": output.context,
             "objective": output.objective,
             "situation": output.situation,
         }
 
-        for question in merged_questions:
+        for question in output.questions:
             if question.target in field_values:
                 value = field_values[question.target]
-                if value and value.strip():
-                    question.answered = True
 
-        output.questions = merged_questions
+                if self._clean(value):
+                    question.answered = True
 
         pending = self.question_manager.pending(output)
 
         if pending:
             output.status = "CLARIFYING"
-        elif output.status != "READY_FOR_BINAH":
+            output.ready_for_binah = False
+        elif output.status not in {"READY_FOR_BINAH"}:
             output.status = "VERIFYING"
+            output.ready_for_binah = False
 
         return output
 
@@ -168,23 +254,52 @@ class WTMEngine:
         output: WTMOutput,
     ) -> WTMOutput:
         """
-        Marca la preparación para BINAH solo cuando los campos
-        mínimos de contexto, objetivo y situación están presentes.
+        Evalúa las condiciones estructurales conocidas para BINAH.
 
-        Esta comprobación es estructural, no una validación
-        semántica completa de la calidad de la información.
+        La presencia de los tres campos mínimos no garantiza por sí
+        sola la calidad ni la veracidad de la información.
         """
 
-        missing = []
+        missing: list[str] = []
 
-        if not output.situation or not output.situation.strip():
+        if not self._clean(output.situation):
             missing.append("Falta describir la situación.")
 
-        if not output.context or not output.context.strip():
+        if not self._clean(output.context):
             missing.append("Falta especificar el contexto.")
 
-        if not output.objective or not output.objective.strip():
+        if not self._clean(output.objective):
             missing.append("Falta definir el objetivo.")
+
+        pending = self.question_manager.pending(output)
+
+        if pending:
+            missing.append(
+                "Existen preguntas de clarificación obligatorias "
+                "sin responder."
+            )
+
+        blocking_unknowns = [
+            item
+            for item in output.unknowns
+            if item.blocks_binah
+        ]
+
+        if blocking_unknowns:
+            missing.append(
+                "Existen incógnitas que bloquean el análisis de BINAH."
+            )
+
+        unresolved_contradictions = [
+            item
+            for item in output.contradictions
+            if not item.resolved
+        ]
+
+        if unresolved_contradictions:
+            missing.append(
+                "Existen contradicciones sin resolver."
+            )
 
         if missing:
             output.ready_for_binah = False
@@ -215,7 +330,7 @@ class WTMEngine:
         self,
         output: WTMOutput,
     ) -> None:
-        """Actualiza los identificadores de trazabilidad existentes."""
+        """Sincroniza los identificadores de trazabilidad."""
 
         output.traceability.source_evidence_ids = [
             item.id for item in output.evidence
@@ -234,4 +349,14 @@ class WTMEngine:
         ]
         output.traceability.question_ids = [
             item.id for item in output.questions
-        ] 
+        ]
+
+    @staticmethod
+    def _clean(value: str | None) -> str | None:
+        """Devuelve texto limpio o None si está vacío."""
+
+        if value is None:
+            return None
+
+        cleaned = value.strip()
+        return cleaned or None
