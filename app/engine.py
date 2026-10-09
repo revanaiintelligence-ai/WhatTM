@@ -234,4 +234,4 @@ class WTMEngine:
         ]
         output.traceability.question_ids = [
             item.id for item in output.questions
-        ]
+        ] 
