@@ -2,7 +2,13 @@ from .models import WTMQuestion, WTMOutput
 
 
 class WTMQuestionManager:
-    """Preguntas auxiliares; no imponen una secuencia conversacional."""
+    """
+    Genera preguntas auxiliares para identificar información faltante.
+
+    Estas preguntas son sugerencias para orientar la conversación.
+    No constituyen un formulario obligatorio ni determinan por sí
+    solas si un caso está listo para BINAH.
+    """
 
     def build_basic_questions(
         self,
@@ -10,7 +16,7 @@ class WTMQuestionManager:
         objective: bool,
         situation: bool,
     ) -> list[WTMQuestion]:
-        questions = []
+        questions: list[WTMQuestion] = []
 
         if not situation:
             questions.append(
